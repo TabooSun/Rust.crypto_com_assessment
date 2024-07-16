@@ -52,8 +52,9 @@ Exercise 3 (Hard):
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+use std::cell::RefCell;
 use std::fmt::{Display, Formatter};
-use std::slice::Chunks;
+use std::rc::Rc;
 
 use sha2::Digest;
 
@@ -67,10 +68,12 @@ pub type Hash = Vec<u8>;
 /// A Merkle Tree.
 #[derive(Debug, Clone)]
 pub struct MerkleTree {
-    pub root: MerkleNode,
+    pub root: MerkleNodeRef,
 }
 
-#[derive(Debug, Clone)]
+type MerkleNodeRef = Rc<RefCell<MerkleNode>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleNode {
     /// The hashed data.
     hash: Hash,
@@ -78,23 +81,23 @@ pub struct MerkleNode {
     /// Parent node
     ///
     /// If the parent node is null, it is the root node.
-    parent: Option<Box<MerkleNode>>,
-    left: Option<Box<MerkleNode>>,
-    right: Option<Box<MerkleNode>>,
+    parent: Option<MerkleNodeRef>,
+    left: Option<MerkleNodeRef>,
+    right: Option<MerkleNodeRef>,
 }
 
 impl MerkleNode {
-    pub fn get_sibling<'a>(&self) -> Option<(Box<MerkleNode>, HashDirection)> {
+    pub fn get_sibling<'a>(&self) -> Option<(MerkleNodeRef, HashDirection)> {
         match &self.parent {
             None => None,
             Some(parent) => {
                 let self_hash = Some(self.hash.to_owned());
-                if parent.left.to_owned().map(|left| left.hash) == self_hash {
-                    return parent.right.to_owned().map(|right| (right, HashDirection::Right));
+                if parent.borrow().left.to_owned().map(|left| left.borrow().hash.clone()) == self_hash {
+                    return parent.borrow().right.to_owned().map(|right| (right, HashDirection::Right));
                 }
 
-                if parent.right.to_owned().map(|right| right.hash) == self_hash {
-                    return parent.left.to_owned().map(|left| (left, HashDirection::Left));
+                if parent.borrow().right.to_owned().map(|right| right.borrow().hash.clone()) == self_hash {
+                    return parent.borrow().left.to_owned().map(|left| (left, HashDirection::Left));
                 }
 
                 None
@@ -126,28 +129,28 @@ pub struct Proof {
 impl MerkleTree {
     /// Gets root hash for this tree
     pub fn root(&self) -> Hash {
-        self.root.hash.clone()
+        self.root.borrow().hash.clone()
     }
 
     /// Constructs a Merkle tree from given input data
     pub fn construct(input: &[Data]) -> MerkleTree {
         let chunks = input.chunks(2);
-        let mut workspace: Vec<MerkleNode> = Vec::new();
+        let mut workspace: Vec<MerkleNodeRef> = Vec::new();
         for chunk in chunks.clone() {
             let node = MerkleTree::construct_from_data(chunk);
-            println!("{:#?}", hex::encode(&node.hash));
+            println!("{:#?}", hex::encode(&node.borrow().hash));
             workspace.push(node);
         }
 
-        let mut workspace_chunks: Chunks<MerkleNode>;
         loop {
             let cloned_workspace = workspace.to_owned();
-            workspace_chunks = cloned_workspace.chunks(2);
+
+            let workspace_chunks = cloned_workspace.chunks(2);
             workspace.clear();
 
             for chunk in workspace_chunks.clone() {
                 let node = MerkleTree::construct_from_nodes(chunk);
-                println!("{:#?}", hex::encode(&node.hash));
+                println!("{:#?}", hex::encode(&node.borrow().hash));
                 workspace.push(node);
             }
 
@@ -169,47 +172,68 @@ impl MerkleTree {
     /// * `nodes`: A group of Merkle nodes. Must be less than or equal to 2.
     ///
     /// returns: MerkleNode that contains the two input nodes.
-    fn construct_from_nodes(nodes: &[MerkleNode]) -> MerkleNode {
+    fn construct_from_nodes(nodes: &[MerkleNodeRef]) -> MerkleNodeRef {
         if nodes.len() > 2 {
             panic!("Input data must be less than or equal to 2");
         }
 
-        let mut node_iter = nodes.iter();
+        let nodes = nodes.to_owned();
+        let mut node_iter = nodes.into_iter();
         let left_node = node_iter.next().unwrap();
         let right_node = node_iter.next();
 
-        Self::create_parent_node(left_node, right_node)
+        let parent_node = Self::create_parent_node(left_node, right_node);
+        parent_node
     }
 
-    fn create_parent_node(left: &MerkleNode, right: Option<&MerkleNode>) -> MerkleNode {
+    fn create_parent_node(left: MerkleNodeRef, right: Option<MerkleNodeRef>) -> MerkleNodeRef {
         let mut parent = MerkleNode {
             hash: match &right {
-                None => { left.hash.to_owned() }
+                None => { left.borrow().hash.to_owned() }
                 Some(right) => {
-                    hash_concat(&left.hash, &right.hash)
+                    hash_concat(&left.borrow().hash, &right.borrow().hash)
                 }
             },
             raw_data: match &right {
-                None => { left.raw_data.clone() }
+                None => { left.borrow().raw_data.clone() }
                 Some(right) => {
-                    left.raw_data.iter().copied().chain(right.raw_data.iter().copied()).collect()
+                    left.borrow().raw_data.iter().copied().chain(right.borrow().raw_data.iter().copied()).collect()
                 }
             },
             parent: None,
-            left: Some(Box::new(left.to_owned())),
-            right: right.map(|right| Box::new(right.to_owned())),
+            left: Some(left),
+            right,
         };
 
-        parent.left.as_mut().unwrap().parent = Some(Box::new(parent.to_owned()));
+        let boxed_parent = Rc::new(RefCell::new(parent.to_owned()));
+        if let Some(ref mut left_child) = parent.left {
+            let mut left_child = left_child.borrow_mut();
+            left_child.parent = Some(boxed_parent.clone());
+        }
 
-        let cloned_parent = parent.to_owned();
-        match parent.right.as_mut() {
+        boxed_parent.clone().borrow().left.clone().unwrap().borrow().parent.clone().unwrap();
+        if let Some(ref mut right_child) = parent.right {
+            let mut right_child = right_child.borrow_mut();
+            right_child.parent = Some(boxed_parent.clone());
+        }
+        /*match parent.right.as_mut() {
             None => {}
             Some(right) => {
-                right.parent = Some(Box::new(cloned_parent))
+                right.parent = Some(boxed_parent.clone());
             }
-        }
-        parent
+        }*/
+        /*{
+            // let boxed_parent = Box::new(parent_node.to_owned());
+            left.parent = Some(boxed_parent.clone());
+            match right {
+                None => {}
+                Some(right_node) => {
+                    right_node.parent = Some(boxed_parent);
+                }
+            }
+            parent.clone().left.unwrap().parent.unwrap();
+        }*/
+        boxed_parent
     }
 
     /// Constructs a pair of Merkle nodes from given input data.
@@ -219,29 +243,31 @@ impl MerkleTree {
     /// * `input`: A group of data. Must be less than or equal to 2.
     ///
     /// returns: MerkleNode that contains the two input nodes.
-    fn construct_from_data(input: &[Data]) -> MerkleNode {
+    fn construct_from_data(input: &[Data]) -> MerkleNodeRef {
         if input.len() > 2 {
             panic!("Input data must be less than or equal to 2");
         }
 
         let mut input_iter = input.iter();
         let left_data = input_iter.next().unwrap();
-        let left = MerkleNode {
+        let left = Rc::new(RefCell::new(MerkleNode {
             hash: hash_data(left_data),
             raw_data: left_data.clone(),
             parent: None,
             left: None,
             right: None,
-        };
+        }));
         let right_data = input_iter.next();
-        let right = right_data.map(|right_data| MerkleNode {
+        let right = right_data.map(|right_data| Rc::new(RefCell::new(MerkleNode {
             hash: hash_data(right_data),
             raw_data: right_data.clone(),
             parent: None,
             left: None,
             right: None,
-        });
-        Self::create_parent_node(&left, right.as_ref())
+        })));
+        let parent_node = Self::create_parent_node(left, right);
+        parent_node.clone().borrow().left.clone().unwrap().borrow().parent.clone().unwrap();
+        parent_node
     }
 
     /// Verifies that the given input data produces the given root hash
@@ -283,20 +309,21 @@ impl MerkleTree {
 
     fn prove_core<'a>(&self, hashed_data: &Hash, proof_hashes: &mut Vec<(HashDirection, Hash)>) {
         let hashed_data_node = Self::find_node(hashed_data, Some(&self.root));
+        hashed_data_node.clone().unwrap().borrow().parent.clone().unwrap().borrow().parent.clone().unwrap();
         Self::drive_path(&hashed_data_node.unwrap(), proof_hashes);
     }
 
-    fn drive_path<'a>(node: &MerkleNode, proof_hashes: &mut Vec<(HashDirection, Hash)>) {
-        match &node.parent {
+    fn drive_path(node: &MerkleNodeRef, proof_hashes: &mut Vec<(HashDirection, Hash)>) {
+        match &node.borrow().parent {
             None => {
                 // This is a root node. Nothing to do here. We can close our recursive loop now.
             }
             Some(parent) => {
-                let sibling = node.get_sibling();
+                let sibling = node.borrow().get_sibling();
                 match sibling {
                     None => {}
                     Some((sibling, direction)) => {
-                        proof_hashes.push((direction, sibling.hash));
+                        proof_hashes.push((direction, sibling.borrow().hash.clone()));
                     }
                 }
 
@@ -305,21 +332,22 @@ impl MerkleTree {
         }
     }
 
-    fn find_node(hashed_data: &Hash, parent_node: Option<&MerkleNode>) -> Option<MerkleNode> {
+    fn find_node(hashed_data: &Hash, parent_node: Option<&MerkleNodeRef>) -> Option<MerkleNodeRef> {
         match parent_node {
             None => None,
             Some(parent_node) => {
-                let left = Self::find_node(hashed_data, parent_node.left.as_ref().map(|left| left.as_ref()));
+                let left = Self::find_node(hashed_data, parent_node.borrow().left.as_ref());
                 if left.is_some() {
                     return left;
                 }
 
-                let right = Self::find_node(hashed_data, parent_node.right.as_ref().map(|right| right.as_ref()));
+                let right = Self::find_node(hashed_data, parent_node.borrow().right.as_ref());
                 if right.is_some() {
                     return right;
                 }
 
-                if parent_node.hash == *hashed_data {
+                if parent_node.borrow().hash == *hashed_data {
+                    parent_node.borrow().parent.to_owned().unwrap().borrow().parent.clone().unwrap();
                     return Some(parent_node.to_owned());
                 }
 
@@ -444,7 +472,8 @@ mod tests {
         let data = example_data(4);
 
         let tree = MerkleTree::construct(&data);
-        println!("{:#?}", tree);
+        tree.root.clone().borrow().right.clone().unwrap().borrow().left.clone().unwrap().borrow().parent.clone().unwrap().borrow().parent.clone().unwrap();
+        /*println!("{:#?}", tree);
         let root = tree.root;
         let left = root.left.unwrap();
         left.parent.unwrap();
@@ -453,7 +482,7 @@ mod tests {
         let left_left = left.left.unwrap();
         let left_right = left.right.unwrap();
         let right_left = right.left.unwrap();
-        let right_right = right.right.unwrap();
+        let right_right = right.right.unwrap();*/
     }
 
     #[test]
@@ -482,5 +511,16 @@ mod tests {
         println!("vec2_hashed: {:#?}", hex::encode(&vec2_hashed));
         let vec0_vec1_vec2_hashed = hash_concat(&vec0_vec1_hashed, &vec2_hashed);
         println!("vec0_vec1_vec2_hashed: {:#?}", hex::encode(vec0_vec1_vec2_hashed));
+    }
+
+    #[test]
+    fn test_find_node() {
+        // Arrange
+        let data = example_data(4);
+        let tree = MerkleTree::construct(&data);
+        let data_to_find = vec![2u8];
+
+        // Act
+        // let result = MerkleTree::find_node(&hash_data(&data_to_find), Some(&tree.root));
     }
 }
