@@ -59,17 +59,6 @@ use sha2::Digest;
 
 fn main() {
     // let data = example_data(4);
-    let data = vec![vec![0], vec![1], vec![2], vec![3]];
-    let vec0_hashed = hash_data(&data[0]);
-    let vec1_hashed = hash_data(&data[1]);
-    let vec0_vec1_hashed = hash_concat(&vec0_hashed, &vec1_hashed);
-    println!("vec0_vec1_hashed: {:#?}", hex::encode(&vec0_vec1_hashed));
-    let vec2_hashed = hash_data(&data[2]);
-    let vec3_hashed = hash_data(&data[3]);
-    let vec2_vec3_hashed = hash_concat(&vec2_hashed, &vec3_hashed);
-    println!("vec2_vec3_hashed: {:#?}", hex::encode(&vec2_vec3_hashed));
-    let vec0_vec1_vec2_vec3_hashed = hash_concat(&vec0_vec1_hashed, &vec2_vec3_hashed);
-    println!("vec0_hashed: {:#?}", hex::encode(vec0_vec1_vec2_vec3_hashed));
 }
 
 pub type Data = Vec<u8>;
@@ -125,7 +114,8 @@ impl MerkleTree {
         let chunks = input.chunks(2);
         let mut workspace: Vec<MerkleNode> = Vec::new();
         for chunk in chunks.clone() {
-            let node = MerkleTree::construct_core(chunk);
+            let node = MerkleTree::construct_from_data(chunk);
+            println!("{:#?}", hex::encode(&node.hash));
             workspace.push(node);
         }
 
@@ -137,6 +127,7 @@ impl MerkleTree {
 
             for chunk in workspace_chunks.clone() {
                 let node = MerkleTree::construct_from_nodes(chunk);
+                println!("{:#?}", hex::encode(&node.hash));
                 workspace.push(node);
             }
 
@@ -151,69 +142,64 @@ impl MerkleTree {
         }
     }
 
+    /// Constructs a Merkle node from given input nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `nodes`: A group of Merkle nodes. Must be less than or equal to 2.
+    ///
+    /// returns: MerkleNode that contains the two input nodes.
     fn construct_from_nodes(nodes: &[MerkleNode]) -> MerkleNode {
         if nodes.len() > 2 {
             panic!("Input data must be less than or equal to 2");
         }
 
         let mut node_iter = nodes.iter();
-        let left_node = node_iter.next();
-        let left_left_node = left_node.unwrap().left.clone().unwrap();
-        let left_right_node = left_node.unwrap().right.clone().unwrap();
-        let left = MerkleNode {
-            hash: hash_concat(&left_left_node.hash, &left_right_node.hash),
-            raw_data: left_node.unwrap().raw_data.clone(),
-            parent: None,
-            left: Some(left_left_node),
-            right: Some(left_right_node),
-        };
+        let left_node = node_iter.next().unwrap();
         let right_node = node_iter.next();
-        let right = MerkleNode {
-            hash: match right_node {
-                None => { left.hash.clone() }
-                Some(data) => {
-                    let right_left_node = data.left.clone().unwrap();
-                    let right_right_node = data.right.clone().unwrap();
-                    hash_concat(&right_left_node.hash, &right_right_node.hash)
-                }
-            },
-            raw_data: match right_node {
-                None => { vec![] }
-                Some(data) => {
-                    data.raw_data.clone()
-                }
-            },
-            parent: None,
-            left: right_node.map(|right_node| right_node.left.clone()
-                // We can safely unwrap here because we know that as long as this node exists, it must have a left node.
-                .unwrap()),
-            right: right_node.map(|right_node| right_node.right.clone()
-                // We can safely unwrap here because we know that as long as this node exists, it must have a right node.
-                .unwrap()),
-        };
 
-        Self::create_parent_node(left, right)
+        Self::create_parent_node(left_node, right_node)
     }
 
-    fn create_parent_node(left: MerkleNode, right: MerkleNode) -> MerkleNode {
+    fn create_parent_node(left: &MerkleNode, right: Option<&MerkleNode>) -> MerkleNode {
         let mut parent = MerkleNode {
-            hash: hash_concat(&left.hash, &right.hash),
-            raw_data: left.raw_data.iter().copied().chain(right.raw_data.iter().copied()).collect(),
+            hash: match &right {
+                None => { left.hash.to_owned() }
+                Some(right) => {
+                    hash_concat(&left.hash, &right.hash)
+                }
+            },
+            raw_data: match &right {
+                None => { left.raw_data.clone() }
+                Some(right) => {
+                    left.raw_data.iter().copied().chain(right.raw_data.iter().copied()).collect()
+                }
+            },
             parent: None,
             left: Some(Box::new(left.to_owned())),
-            right: Some(Box::new(right.to_owned())),
+            right: right.map(|right| Box::new(right.to_owned())),
         };
 
         parent.left.as_mut().unwrap().parent = Some(Box::new(parent.to_owned()));
-        parent.right.as_mut().unwrap().parent = Some(Box::new(parent.to_owned()));
+
+        let cloned_parent = parent.to_owned();
+        match parent.right.as_mut() {
+            None => {}
+            Some(right) => {
+                right.parent = Some(Box::new(cloned_parent))
+            }
+        }
         parent
     }
 
     /// Constructs a pair of Merkle nodes from given input data.
     ///
-    /// - [input] - A group of data. Must be less than or equal to 2.
-    /// - Returns a parent node that contains the two input nodes.
-    fn construct_core(input: &[Data]) -> MerkleNode {
+    /// # Arguments
+    ///
+    /// * `input`: A group of data. Must be less than or equal to 2.
+    ///
+    /// returns: MerkleNode that contains the two input nodes.
+    fn construct_from_data(input: &[Data]) -> MerkleNode {
         if input.len() > 2 {
             panic!("Input data must be less than or equal to 2");
         }
@@ -228,25 +214,14 @@ impl MerkleTree {
             right: None,
         };
         let right_data = input_iter.next();
-        let right = MerkleNode {
-            hash: match right_data {
-                // In the event of unbalanced tree, reuse the left hash. Check https://medium.com/techskill-brew/merkle-tree-in-blockchain-part-5-blockchain-basics-4e25b61179a2 for more info.
-                None => { left.hash.clone() }
-                Some(data) => {
-                    hash_data(data)
-                }
-            },
-            raw_data: match right_data {
-                None => { vec![] }
-                Some(data) => {
-                    data.clone()
-                }
-            },
+        let right = right_data.map(|right_data| MerkleNode {
+            hash: hash_data(right_data),
+            raw_data: right_data.clone(),
             parent: None,
             left: None,
             right: None,
-        };
-        Self::create_parent_node(left, right)
+        });
+        Self::create_parent_node(&left, right.as_ref())
     }
 
     /// Verifies that the given input data produces the given root hash
@@ -294,10 +269,10 @@ mod tests {
         assert_eq!(hex::encode(tree.root()), expected_root);
 
         // Uncomment if your implementation allows for unbalanced trees
-        // let data = example_data(3);
-        // let tree = MerkleTree::construct(&data);
-        // let expected_root = "773a93ac37ea78b3f14ac31872c83886b0a0f1fec562c4e848e023c889c2ce9f";
-        // assert_eq!(hex::encode(tree.root()), expected_root);
+        let data = example_data(3);
+        let tree = MerkleTree::construct(&data);
+        let expected_root = "773a93ac37ea78b3f14ac31872c83886b0a0f1fec562c4e848e023c889c2ce9f";
+        assert_eq!(hex::encode(tree.root()), expected_root);
 
         let data = example_data(8);
         let tree = MerkleTree::construct(&data);
@@ -320,5 +295,33 @@ mod tests {
         let left_right = left.right.unwrap();
         let right_left = right.left.unwrap();
         let right_right = right.right.unwrap();
+    }
+
+    #[test]
+    fn test_hash_by_raw_data() {
+        let data = vec![vec![0], vec![1], vec![2], vec![3]];
+        let vec0_hashed = hash_data(&data[0]);
+        let vec1_hashed = hash_data(&data[1]);
+        let vec0_vec1_hashed = hash_concat(&vec0_hashed, &vec1_hashed);
+        println!("vec0_vec1_hashed: {:#?}", hex::encode(&vec0_vec1_hashed));
+        let vec2_hashed = hash_data(&data[2]);
+        let vec3_hashed = hash_data(&data[3]);
+        let vec2_vec3_hashed = hash_concat(&vec2_hashed, &vec3_hashed);
+        println!("vec2_vec3_hashed: {:#?}", hex::encode(&vec2_vec3_hashed));
+        let vec0_vec1_vec2_vec3_hashed = hash_concat(&vec0_vec1_hashed, &vec2_vec3_hashed);
+        println!("vec0_vec1_vec2_vec3_hashed: {:#?}", hex::encode(vec0_vec1_vec2_vec3_hashed));
+    }
+
+    #[test]
+    fn test_hash_by_raw_data_unbalanced() {
+        let data = vec![vec![0], vec![1], vec![2]];
+        let vec0_hashed = hash_data(&data[0]);
+        let vec1_hashed = hash_data(&data[1]);
+        let vec0_vec1_hashed = hash_concat(&vec0_hashed, &vec1_hashed);
+        println!("vec0_vec1_hashed: {:#?}", hex::encode(&vec0_vec1_hashed));
+        let vec2_hashed = hash_data(&data[2]);
+        println!("vec2_hashed: {:#?}", hex::encode(&vec2_hashed));
+        let vec0_vec1_vec2_hashed = hash_concat(&vec0_vec1_hashed, &vec2_hashed);
+        println!("vec0_vec1_vec2_hashed: {:#?}", hex::encode(vec0_vec1_vec2_hashed));
     }
 }
