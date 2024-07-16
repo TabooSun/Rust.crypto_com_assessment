@@ -226,12 +226,27 @@ impl MerkleTree {
 
     /// Verifies that the given input data produces the given root hash
     pub fn verify(input: &[Data], root_hash: &Hash) -> bool {
-        todo!("Exercise 1b")
+        let tree = MerkleTree::construct(input);
+        let tree_root = tree.root();
+        tree_root == *root_hash
     }
 
     /// Verifies that the given data and proof_path correctly produce the given root_hash
     pub fn verify_proof(data: &Data, proof: &Proof, root_hash: &Hash) -> bool {
-        todo!("Exercise 2")
+        let mut workspace: Hash = hash_data(data);
+        for (direction, hash) in &proof.hashes {
+            workspace = match direction {
+                HashDirection::Left => {
+                    hash_concat(hash, &workspace)
+                }
+                HashDirection::Right => {
+                    hash_concat(&workspace, hash)
+                }
+            };
+            println!("{:#?}", hex::encode(&workspace));
+        }
+
+        workspace == *root_hash
     }
 
     /// Returns a list of hashes that can be used to prove that the given data is in this tree
@@ -281,6 +296,47 @@ mod tests {
     }
 
     #[test]
+    fn test_verify() {
+        // Arrange
+        let data = example_data(4);
+        let root_hash = "9675e04b4ba9dc81b06e81731e2d21caa2c95557a85dcfa3fff70c9ff0f30b2e";
+
+        // Act
+        let result = MerkleTree::verify(&data, &hex::decode(root_hash).unwrap());
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_verify_proof() {
+        // Arrange
+        let data = example_data(4);
+        let data_to_prove = &vec![2u8].clone();
+        let h4 = hash_data(&vec![3u8].clone());
+        println!("h4: {:#?}", hex::encode(&h4));
+        let h1 = hash_data(&vec![0u8].clone());
+        println!("h1: {:#?}", hex::encode(&h1));
+        let h2 = hash_data(&vec![1u8].clone());
+        println!("h2: {:#?}", hex::encode(&h2));
+        let h5 = hash_concat(&h1, &h2);
+        println!("h5: {:#?}", hex::encode(&h5));
+        let prove = Proof {
+            hashes: vec![
+                (HashDirection::Right, &h4),
+                (HashDirection::Left, &h5),
+            ],
+        };
+        let root_hash = "9675e04b4ba9dc81b06e81731e2d21caa2c95557a85dcfa3fff70c9ff0f30b2e";
+
+        // Act
+        let result = MerkleTree::verify_proof(data_to_prove, &prove, &hex::decode(root_hash).unwrap());
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
     fn test_structure_correct() {
         let data = example_data(4);
 
@@ -303,11 +359,11 @@ mod tests {
         let vec0_hashed = hash_data(&data[0]);
         let vec1_hashed = hash_data(&data[1]);
         let vec0_vec1_hashed = hash_concat(&vec0_hashed, &vec1_hashed);
-        println!("vec0_vec1_hashed: {:#?}", hex::encode(&vec0_vec1_hashed));
+        println!("vec0_vec1_hashed/h5: {:#?}", hex::encode(&vec0_vec1_hashed));
         let vec2_hashed = hash_data(&data[2]);
         let vec3_hashed = hash_data(&data[3]);
         let vec2_vec3_hashed = hash_concat(&vec2_hashed, &vec3_hashed);
-        println!("vec2_vec3_hashed: {:#?}", hex::encode(&vec2_vec3_hashed));
+        println!("vec2_vec3_hashed/h6: {:#?}", hex::encode(&vec2_vec3_hashed));
         let vec0_vec1_vec2_vec3_hashed = hash_concat(&vec0_vec1_hashed, &vec2_vec3_hashed);
         println!("vec0_vec1_vec2_vec3_hashed: {:#?}", hex::encode(vec0_vec1_vec2_vec3_hashed));
     }
