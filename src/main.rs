@@ -83,6 +83,26 @@ pub struct MerkleNode {
     right: Option<Box<MerkleNode>>,
 }
 
+impl MerkleNode {
+    pub fn get_sibling<'a>(&self) -> Option<(Box<MerkleNode>, HashDirection)> {
+        match &self.parent {
+            None => None,
+            Some(parent) => {
+                let self_hash = Some(self.hash.to_owned());
+                if parent.left.to_owned().map(|left| left.hash) == self_hash {
+                    return parent.right.to_owned().map(|right| (right, HashDirection::Right));
+                }
+
+                if parent.right.to_owned().map(|right| right.hash) == self_hash {
+                    return parent.left.to_owned().map(|left| (left, HashDirection::Left));
+                }
+
+                None
+            }
+        }
+    }
+}
+
 impl Display for MerkleNode {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "MerkleNode: {}", hex::encode(&self.hash))
@@ -90,17 +110,17 @@ impl Display for MerkleNode {
 }
 
 /// Which side to put Hash on when concatinating proof hashes
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashDirection {
     Left,
     Right,
 }
 
-#[derive(Debug, Default)]
-pub struct Proof<'a> {
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct Proof {
     /// The hashes to use when verifying the proof
     /// The first element of the tuple is which side the hash should be on when concatinating
-    hashes: Vec<(HashDirection, &'a Hash)>,
+    hashes: Vec<(HashDirection, Hash)>,
 }
 
 impl MerkleTree {
@@ -251,9 +271,64 @@ impl MerkleTree {
 
     /// Returns a list of hashes that can be used to prove that the given data is in this tree
     pub fn prove(&self, data: &Data) -> Option<Proof> {
-        todo!("Exercise 3")
+        let hashed_data = hash_data(data);
+
+        let mut proof_hashes: Vec<(HashDirection, Hash)> = vec![];
+        self.prove_core(&hashed_data, &mut proof_hashes);
+
+        Some(Proof {
+            hashes: proof_hashes,
+        })
+    }
+
+    fn prove_core<'a>(&self, hashed_data: &Hash, proof_hashes: &mut Vec<(HashDirection, Hash)>) {
+        let hashed_data_node = Self::find_node(hashed_data, Some(&self.root));
+        Self::drive_path(&hashed_data_node.unwrap(), proof_hashes);
+    }
+
+    fn drive_path<'a>(node: &MerkleNode, proof_hashes: &mut Vec<(HashDirection, Hash)>) {
+        match &node.parent {
+            None => {
+                // This is a root node. Nothing to do here. We can close our recursive loop now.
+            }
+            Some(parent) => {
+                let sibling = node.get_sibling();
+                match sibling {
+                    None => {}
+                    Some((sibling, direction)) => {
+                        proof_hashes.push((direction, sibling.hash));
+                    }
+                }
+
+                Self::drive_path(parent, proof_hashes);
+            }
+        }
+    }
+
+    fn find_node(hashed_data: &Hash, parent_node: Option<&MerkleNode>) -> Option<MerkleNode> {
+        match parent_node {
+            None => None,
+            Some(parent_node) => {
+                let left = Self::find_node(hashed_data, parent_node.left.as_ref().map(|left| left.as_ref()));
+                if left.is_some() {
+                    return left;
+                }
+
+                let right = Self::find_node(hashed_data, parent_node.right.as_ref().map(|right| right.as_ref()));
+                if right.is_some() {
+                    return right;
+                }
+
+                if parent_node.hash == *hashed_data {
+                    return Some(parent_node.to_owned());
+                }
+
+                None
+            }
+        }
     }
 }
+
 
 fn hash_data(data: &Data) -> Hash {
     sha2::Sha256::digest(data).to_vec()
@@ -323,8 +398,8 @@ mod tests {
         println!("h5: {:#?}", hex::encode(&h5));
         let prove = Proof {
             hashes: vec![
-                (HashDirection::Right, &h4),
-                (HashDirection::Left, &h5),
+                (HashDirection::Right, h4),
+                (HashDirection::Left, h5),
             ],
         };
         let root_hash = "9675e04b4ba9dc81b06e81731e2d21caa2c95557a85dcfa3fff70c9ff0f30b2e";
@@ -334,6 +409,34 @@ mod tests {
 
         // Assert
         assert!(result);
+    }
+
+    #[test]
+    fn test_prove() {
+        // Arrange
+        let data = example_data(4);
+        let data_to_prove = &vec![2u8].clone();
+        let h4 = hash_data(&vec![3u8].clone());
+        println!("h4: {:#?}", hex::encode(&h4));
+        let h1 = hash_data(&vec![0u8].clone());
+        println!("h1: {:#?}", hex::encode(&h1));
+        let h2 = hash_data(&vec![1u8].clone());
+        println!("h2: {:#?}", hex::encode(&h2));
+        let h5 = hash_concat(&h1, &h2);
+        println!("h5: {:#?}", hex::encode(&h5));
+        let prove = Proof {
+            hashes: vec![
+                (HashDirection::Right, h4),
+                (HashDirection::Left, h5),
+            ],
+        };
+        let tree = MerkleTree::construct(&data);
+
+        // Act
+        let result = tree.prove(data_to_prove);
+
+        // Assert
+        assert_eq!(result, Some(prove));
     }
 
     #[test]
