@@ -183,6 +183,14 @@ impl MerkleTree {
         Self::create_parent_node(left_node, right_node)
     }
 
+    /// Create a parent node from given left and right nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `left`: The left node.
+    /// * `right`: The right node.
+    ///
+    /// returns: Rc<RefCell<MerkleNode>, Global>, a parent node that contains the two input nodes.
     fn create_parent_node(left: MerkleNodeRef, right: Option<MerkleNodeRef>) -> MerkleNodeRef {
         let mut parent = MerkleNode {
             hash: match &right {
@@ -203,6 +211,9 @@ impl MerkleTree {
         };
 
         let boxed_parent = Rc::new(RefCell::new(parent.to_owned()));
+
+        // It's the time to attach the parent to the children.
+
         if let Some(ref mut left_child) = parent.left {
             let mut left_child = left_child.borrow_mut();
             left_child.parent = Some(boxed_parent.clone());
@@ -425,7 +436,7 @@ mod tests {
         let data = example_data(4);
         let data_to_prove = &vec![2u8].clone();
         generate_prove!(prove);
-        
+
         let tree = MerkleTree::construct(&data);
 
         // Act
