@@ -76,7 +76,7 @@ type MerkleNodeRef = Rc<RefCell<MerkleNode>>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleNode {
     /// The hashed data.
-    hash: Hash,
+    hash: Rc<Hash>,
     raw_data: Data,
     /// Parent node
     ///
@@ -87,7 +87,7 @@ pub struct MerkleNode {
 }
 
 impl MerkleNode {
-    pub fn get_sibling<'a>(&self) -> Option<(MerkleNodeRef, HashDirection)> {
+    pub fn get_sibling(&self) -> Option<(MerkleNodeRef, HashDirection)> {
         match &self.parent {
             None => None,
             Some(parent) => {
@@ -108,7 +108,7 @@ impl MerkleNode {
 
 impl Display for MerkleNode {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MerkleNode: {}", hex::encode(&self.hash))
+        write!(f, "MerkleNode: {}", hex::encode(self.hash.as_ref()))
     }
 }
 
@@ -120,16 +120,16 @@ pub enum HashDirection {
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
-pub struct Proof {
+pub struct Proof<'a> {
     /// The hashes to use when verifying the proof
     /// The first element of the tuple is which side the hash should be on when concatinating
-    hashes: Vec<(HashDirection, Hash)>,
+    hashes: Vec<(HashDirection, &'a Hash)>,
 }
 
 impl MerkleTree {
     /// Gets root hash for this tree
     pub fn root(&self) -> Hash {
-        self.root.borrow().hash.clone()
+        self.root.borrow().hash.as_ref().to_owned()
     }
 
     /// Constructs a Merkle tree from given input data
@@ -138,7 +138,6 @@ impl MerkleTree {
         let mut workspace: Vec<MerkleNodeRef> = Vec::new();
         for chunk in chunks.clone() {
             let node = MerkleTree::construct_from_data(chunk);
-            println!("{:#?}", hex::encode(&node.borrow().hash));
             workspace.push(node);
         }
 
@@ -150,7 +149,6 @@ impl MerkleTree {
 
             for chunk in workspace_chunks.clone() {
                 let node = MerkleTree::construct_from_nodes(chunk);
-                println!("{:#?}", hex::encode(&node.borrow().hash));
                 workspace.push(node);
             }
 
@@ -182,8 +180,7 @@ impl MerkleTree {
         let left_node = node_iter.next().unwrap();
         let right_node = node_iter.next();
 
-        let parent_node = Self::create_parent_node(left_node, right_node);
-        parent_node
+        Self::create_parent_node(left_node, right_node)
     }
 
     fn create_parent_node(left: MerkleNodeRef, right: Option<MerkleNodeRef>) -> MerkleNodeRef {
@@ -191,7 +188,7 @@ impl MerkleTree {
             hash: match &right {
                 None => { left.borrow().hash.to_owned() }
                 Some(right) => {
-                    hash_concat(&left.borrow().hash, &right.borrow().hash)
+                    Rc::new(hash_concat(left.borrow().hash.as_ref(), right.borrow().hash.as_ref()))
                 }
             },
             raw_data: match &right {
@@ -216,23 +213,6 @@ impl MerkleTree {
             let mut right_child = right_child.borrow_mut();
             right_child.parent = Some(boxed_parent.clone());
         }
-        /*match parent.right.as_mut() {
-            None => {}
-            Some(right) => {
-                right.parent = Some(boxed_parent.clone());
-            }
-        }*/
-        /*{
-            // let boxed_parent = Box::new(parent_node.to_owned());
-            left.parent = Some(boxed_parent.clone());
-            match right {
-                None => {}
-                Some(right_node) => {
-                    right_node.parent = Some(boxed_parent);
-                }
-            }
-            parent.clone().left.unwrap().parent.unwrap();
-        }*/
         boxed_parent
     }
 
@@ -251,7 +231,7 @@ impl MerkleTree {
         let mut input_iter = input.iter();
         let left_data = input_iter.next().unwrap();
         let left = Rc::new(RefCell::new(MerkleNode {
-            hash: hash_data(left_data),
+            hash: Rc::new(hash_data(left_data)),
             raw_data: left_data.clone(),
             parent: None,
             left: None,
@@ -259,15 +239,13 @@ impl MerkleTree {
         }));
         let right_data = input_iter.next();
         let right = right_data.map(|right_data| Rc::new(RefCell::new(MerkleNode {
-            hash: hash_data(right_data),
+            hash: Rc::new(hash_data(right_data)),
             raw_data: right_data.clone(),
             parent: None,
             left: None,
             right: None,
         })));
-        let parent_node = Self::create_parent_node(left, right);
-        parent_node.clone().borrow().left.clone().unwrap().borrow().parent.clone().unwrap();
-        parent_node
+        Self::create_parent_node(left, right)
     }
 
     /// Verifies that the given input data produces the given root hash
@@ -289,7 +267,6 @@ impl MerkleTree {
                     hash_concat(&workspace, hash)
                 }
             };
-            println!("{:#?}", hex::encode(&workspace));
         }
 
         workspace == *root_hash
@@ -299,7 +276,7 @@ impl MerkleTree {
     pub fn prove(&self, data: &Data) -> Option<Proof> {
         let hashed_data = hash_data(data);
 
-        let mut proof_hashes: Vec<(HashDirection, Hash)> = vec![];
+        let mut proof_hashes: Vec<(HashDirection, &Hash)> = vec![];
         self.prove_core(&hashed_data, &mut proof_hashes);
 
         Some(Proof {
@@ -307,13 +284,12 @@ impl MerkleTree {
         })
     }
 
-    fn prove_core<'a>(&self, hashed_data: &Hash, proof_hashes: &mut Vec<(HashDirection, Hash)>) {
+    fn prove_core(&self, hashed_data: &Hash, proof_hashes: &mut Vec<(HashDirection, &Hash)>) {
         let hashed_data_node = Self::find_node(hashed_data, Some(&self.root));
-        hashed_data_node.clone().unwrap().borrow().parent.clone().unwrap().borrow().parent.clone().unwrap();
         Self::drive_path(&hashed_data_node.unwrap(), proof_hashes);
     }
 
-    fn drive_path(node: &MerkleNodeRef, proof_hashes: &mut Vec<(HashDirection, Hash)>) {
+    fn drive_path(node: &MerkleNodeRef, proof_hashes: &mut Vec<(HashDirection, &Hash)>) {
         match &node.borrow().parent {
             None => {
                 // This is a root node. Nothing to do here. We can close our recursive loop now.
@@ -323,7 +299,8 @@ impl MerkleTree {
                 match sibling {
                     None => {}
                     Some((sibling, direction)) => {
-                        proof_hashes.push((direction, sibling.borrow().hash.clone()));
+                        let sibling = sibling.as_ptr();
+                        proof_hashes.push((direction, (unsafe { &*sibling }).hash.as_ref()));
                     }
                 }
 
@@ -346,7 +323,7 @@ impl MerkleTree {
                     return right;
                 }
 
-                if parent_node.borrow().hash == *hashed_data {
+                if parent_node.borrow().hash.as_ref() == hashed_data {
                     parent_node.borrow().parent.to_owned().unwrap().borrow().parent.clone().unwrap();
                     return Some(parent_node.to_owned());
                 }
@@ -417,17 +394,13 @@ mod tests {
         let data = example_data(4);
         let data_to_prove = &vec![2u8].clone();
         let h4 = hash_data(&vec![3u8].clone());
-        println!("h4: {:#?}", hex::encode(&h4));
         let h1 = hash_data(&vec![0u8].clone());
-        println!("h1: {:#?}", hex::encode(&h1));
         let h2 = hash_data(&vec![1u8].clone());
-        println!("h2: {:#?}", hex::encode(&h2));
         let h5 = hash_concat(&h1, &h2);
-        println!("h5: {:#?}", hex::encode(&h5));
         let prove = Proof {
             hashes: vec![
-                (HashDirection::Right, h4),
-                (HashDirection::Left, h5),
+                (HashDirection::Right, &h4),
+                (HashDirection::Left, &h5),
             ],
         };
         let root_hash = "9675e04b4ba9dc81b06e81731e2d21caa2c95557a85dcfa3fff70c9ff0f30b2e";
@@ -445,17 +418,13 @@ mod tests {
         let data = example_data(4);
         let data_to_prove = &vec![2u8].clone();
         let h4 = hash_data(&vec![3u8].clone());
-        println!("h4: {:#?}", hex::encode(&h4));
         let h1 = hash_data(&vec![0u8].clone());
-        println!("h1: {:#?}", hex::encode(&h1));
         let h2 = hash_data(&vec![1u8].clone());
-        println!("h2: {:#?}", hex::encode(&h2));
         let h5 = hash_concat(&h1, &h2);
-        println!("h5: {:#?}", hex::encode(&h5));
         let prove = Proof {
             hashes: vec![
-                (HashDirection::Right, h4),
-                (HashDirection::Left, h5),
+                (HashDirection::Right, &h4),
+                (HashDirection::Left, &h5),
             ],
         };
         let tree = MerkleTree::construct(&data);
@@ -465,62 +434,5 @@ mod tests {
 
         // Assert
         assert_eq!(result, Some(prove));
-    }
-
-    #[test]
-    fn test_structure_correct() {
-        let data = example_data(4);
-
-        let tree = MerkleTree::construct(&data);
-        tree.root.clone().borrow().right.clone().unwrap().borrow().left.clone().unwrap().borrow().parent.clone().unwrap().borrow().parent.clone().unwrap();
-        /*println!("{:#?}", tree);
-        let root = tree.root;
-        let left = root.left.unwrap();
-        left.parent.unwrap();
-        let right = root.right.unwrap();
-        right.parent.unwrap();
-        let left_left = left.left.unwrap();
-        let left_right = left.right.unwrap();
-        let right_left = right.left.unwrap();
-        let right_right = right.right.unwrap();*/
-    }
-
-    #[test]
-    fn test_hash_by_raw_data() {
-        let data = vec![vec![0], vec![1], vec![2], vec![3]];
-        let vec0_hashed = hash_data(&data[0]);
-        let vec1_hashed = hash_data(&data[1]);
-        let vec0_vec1_hashed = hash_concat(&vec0_hashed, &vec1_hashed);
-        println!("vec0_vec1_hashed/h5: {:#?}", hex::encode(&vec0_vec1_hashed));
-        let vec2_hashed = hash_data(&data[2]);
-        let vec3_hashed = hash_data(&data[3]);
-        let vec2_vec3_hashed = hash_concat(&vec2_hashed, &vec3_hashed);
-        println!("vec2_vec3_hashed/h6: {:#?}", hex::encode(&vec2_vec3_hashed));
-        let vec0_vec1_vec2_vec3_hashed = hash_concat(&vec0_vec1_hashed, &vec2_vec3_hashed);
-        println!("vec0_vec1_vec2_vec3_hashed: {:#?}", hex::encode(vec0_vec1_vec2_vec3_hashed));
-    }
-
-    #[test]
-    fn test_hash_by_raw_data_unbalanced() {
-        let data = vec![vec![0], vec![1], vec![2]];
-        let vec0_hashed = hash_data(&data[0]);
-        let vec1_hashed = hash_data(&data[1]);
-        let vec0_vec1_hashed = hash_concat(&vec0_hashed, &vec1_hashed);
-        println!("vec0_vec1_hashed: {:#?}", hex::encode(&vec0_vec1_hashed));
-        let vec2_hashed = hash_data(&data[2]);
-        println!("vec2_hashed: {:#?}", hex::encode(&vec2_hashed));
-        let vec0_vec1_vec2_hashed = hash_concat(&vec0_vec1_hashed, &vec2_hashed);
-        println!("vec0_vec1_vec2_hashed: {:#?}", hex::encode(vec0_vec1_vec2_hashed));
-    }
-
-    #[test]
-    fn test_find_node() {
-        // Arrange
-        let data = example_data(4);
-        let tree = MerkleTree::construct(&data);
-        let data_to_find = vec![2u8];
-
-        // Act
-        // let result = MerkleTree::find_node(&hash_data(&data_to_find), Some(&tree.root));
     }
 }
