@@ -388,21 +388,28 @@ mod tests {
         assert!(result);
     }
 
+    macro_rules! generate_prove {
+        ($var:ident) => {
+            let h4 = hash_data(&vec![3u8].clone());
+            let h1 = hash_data(&vec![0u8].clone());
+            let h2 = hash_data(&vec![1u8].clone());
+            let h5 = hash_concat(&h1, &h2);
+            let $var = Proof {
+                hashes: vec![
+                    (HashDirection::Right, &h4),
+                    (HashDirection::Left, &h5),
+                ],
+            };
+        };
+    }
+
     #[test]
     fn test_verify_proof() {
         // Arrange
         let data = example_data(4);
         let data_to_prove = &vec![2u8].clone();
-        let h4 = hash_data(&vec![3u8].clone());
-        let h1 = hash_data(&vec![0u8].clone());
-        let h2 = hash_data(&vec![1u8].clone());
-        let h5 = hash_concat(&h1, &h2);
-        let prove = Proof {
-            hashes: vec![
-                (HashDirection::Right, &h4),
-                (HashDirection::Left, &h5),
-            ],
-        };
+        generate_prove!(prove);
+
         let root_hash = "9675e04b4ba9dc81b06e81731e2d21caa2c95557a85dcfa3fff70c9ff0f30b2e";
 
         // Act
@@ -417,16 +424,8 @@ mod tests {
         // Arrange
         let data = example_data(4);
         let data_to_prove = &vec![2u8].clone();
-        let h4 = hash_data(&vec![3u8].clone());
-        let h1 = hash_data(&vec![0u8].clone());
-        let h2 = hash_data(&vec![1u8].clone());
-        let h5 = hash_concat(&h1, &h2);
-        let prove = Proof {
-            hashes: vec![
-                (HashDirection::Right, &h4),
-                (HashDirection::Left, &h5),
-            ],
-        };
+        generate_prove!(prove);
+        
         let tree = MerkleTree::construct(&data);
 
         // Act
