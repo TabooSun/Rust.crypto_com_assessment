@@ -77,7 +77,6 @@ type MerkleNodeRef = Rc<RefCell<MerkleNode>>;
 pub struct MerkleNode {
     /// The hashed data.
     hash: Rc<Hash>,
-    raw_data: Data,
     /// Parent node
     ///
     /// If the parent node is null, it is the root node.
@@ -199,12 +198,6 @@ impl MerkleTree {
                     Rc::new(hash_concat(left.borrow().hash.as_ref(), right.borrow().hash.as_ref()))
                 }
             },
-            raw_data: match &right {
-                None => { left.borrow().raw_data.clone() }
-                Some(right) => {
-                    left.borrow().raw_data.iter().copied().chain(right.borrow().raw_data.iter().copied()).collect()
-                }
-            },
             parent: None,
             left: Some(left),
             right,
@@ -243,7 +236,6 @@ impl MerkleTree {
         let left_data = input_iter.next().unwrap();
         let left = Rc::new(RefCell::new(MerkleNode {
             hash: Rc::new(hash_data(left_data)),
-            raw_data: left_data.clone(),
             parent: None,
             left: None,
             right: None,
@@ -251,7 +243,6 @@ impl MerkleTree {
         let right_data = input_iter.next();
         let right = right_data.map(|right_data| Rc::new(RefCell::new(MerkleNode {
             hash: Rc::new(hash_data(right_data)),
-            raw_data: right_data.clone(),
             parent: None,
             left: None,
             right: None,
@@ -335,7 +326,6 @@ impl MerkleTree {
                 }
 
                 if parent_node.borrow().hash.as_ref() == hashed_data {
-                    parent_node.borrow().parent.to_owned().unwrap().borrow().parent.clone().unwrap();
                     return Some(parent_node.to_owned());
                 }
 
